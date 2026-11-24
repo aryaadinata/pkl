@@ -9,6 +9,7 @@ import {
   faBookOpen,
   faBoxesStacked,
   faBriefcase,
+  faShieldHalved,
   faCompass,
   faCheck,
   faXmark,
@@ -21,6 +22,46 @@ interface AppInfo {
   logo: string;
   favicon?: string;
   url: string;
+}
+
+export function resolveAppUrl(defaultPort: number, path = ""): string {
+  if (typeof window === "undefined") {
+    return `http://localhost:${defaultPort}${path}`;
+  }
+  const protocol = window.location.protocol;
+  const hostname = window.location.hostname;
+
+  // 1. Jika di localhost / 127.0.0.1
+  if (hostname === "localhost" || hostname === "127.0.0.1") {
+    return `${protocol}//localhost:${defaultPort}${path}`;
+  }
+
+  // 2. Jika diakses via IP address (misal IP lokal 192.168.x.x atau IP publik server)
+  const isIp = /^(\d{1,3}\.){3}\d{1,3}$/.test(hostname);
+  if (isIp) {
+    return `${protocol}//${hostname}:${defaultPort}${path}`;
+  }
+
+  // 3. Jika diakses via Domain / Subdomain (misal cbt.sekolah.sch.id atau siak.sekolah.sch.id)
+  const subdomainMap: Record<number, string> = {
+    3000: "siak",
+    3001: "keuangan",
+    3002: "perpustakaan",
+    3003: "sarpras",
+    3004: "pkl",
+    3005: "cbt",
+  };
+
+  const targetSub = subdomainMap[defaultPort];
+  if (targetSub) {
+    const parts = hostname.split(".");
+    if (parts.length >= 2) {
+      const rootDomain = parts.slice(1).join(".");
+      return `${protocol}//${targetSub}.${rootDomain}${path}`;
+    }
+  }
+
+  return `${protocol}//${hostname}:${defaultPort}${path}`;
 }
 
 const DEFAULT_ECOSYSTEM_APPS: Record<string, AppInfo> = {
@@ -59,10 +100,17 @@ const DEFAULT_ECOSYSTEM_APPS: Record<string, AppInfo> = {
     logo: "",
     url: "http://localhost:3004",
   },
+  cbt: {
+    id: "cbt",
+    name: "CBT Ujian",
+    tagline: "Ulangan & SAS",
+    logo: "",
+    url: "http://localhost:3005",
+  },
 };
 
 interface AppSwitcherProps {
-  currentApp?: "siak" | "keuangan" | "perpustakaan" | "sarpras" | "pkl";
+  currentApp?: "siak" | "keuangan" | "perpustakaan" | "sarpras" | "pkl" | "cbt";
 }
 
 export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
@@ -73,6 +121,21 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
   const [isPklMentor, setIsPklMentor] = useState<boolean>(false);
   const [isPklStudent, setIsPklStudent] = useState<boolean>(false);
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  // Helper resolusi URL dinamis (mendukung localhost, IP server, atau subdomain)
+  const getDynamicUrl = (appId: string, defaultPort: number, path = "") => {
+    const customUrl = apps[appId]?.url;
+    if (customUrl && typeof window !== "undefined") {
+      const hostname = window.location.hostname;
+      const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+      if (isLocal) return `${customUrl.replace(/\/+$/, "")}${path}`;
+      if (customUrl.includes("localhost:") || customUrl.includes("127.0.0.1:")) {
+        return resolveAppUrl(defaultPort, path);
+      }
+      return `${customUrl.replace(/\/+$/, "")}${path}`;
+    }
+    return resolveAppUrl(defaultPort, path);
+  };
 
   // Close when clicking outside
   useEffect(() => {
@@ -97,7 +160,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
       localStorage.getItem("perpus_token") ||
       localStorage.getItem("sarpras_token") ||
       localStorage.getItem("pkl_token") ||
-      document.cookie.match(/(?:^|;\s*)(?:siak_token|keuangan_token|perpus_token|sarpras_token|pkl_token)=([^;]+)/)?.[1] ||
+      localStorage.getItem("cbt_token") ||
+      document.cookie.match(/(?:^|;\s*)(?:siak_token|keuangan_token|perpus_token|sarpras_token|pkl_token|cbt_token)=([^;]+)/)?.[1] ||
       ""
     );
   };
@@ -125,7 +189,7 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
       const cached = localStorage.getItem("ecosystem_apps_branding");
       if (cached) {
         const parsed = JSON.parse(cached);
-        if (parsed.siak || parsed.keuangan || parsed.perpustakaan || parsed.pkl || parsed.sarpras) {
+        if (parsed.siak || parsed.keuangan || parsed.perpustakaan || parsed.pkl || parsed.sarpras || parsed.cbt) {
           setApps((prev) => ({ ...prev, ...parsed }));
         }
       }
@@ -211,10 +275,11 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
     };
 
     fetchEcosystem();
+
   }, []);
 
   const getSiakTargetUrl = () => {
-    const base = apps.siak?.url || DEFAULT_ECOSYSTEM_APPS.siak.url || "http://localhost:3000";
+    const base = getDynamicUrl("siak", 3000);
     const cleanUrl = base.replace(/\/+$/, "");
     const role = getUserRoleFromToken();
     if (role === "student" || role === "siswa") {
@@ -234,7 +299,7 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
     const token = getSsoToken();
     let finalUrl = targetUrl;
     if (
-      finalUrl.includes("localhost:3000") &&
+      (finalUrl.includes(":3000") || finalUrl.includes("siak.")) &&
       (finalUrl.endsWith(":3000") ||
         finalUrl.endsWith(":3000/") ||
         (!finalUrl.includes("/portal") &&
@@ -254,11 +319,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
   };
 
   // Filter modul berdasarkan role dan assignment PKL:
-  // - Guru: siak, perpustakaan, dan PKL (jika pembimbing)
-  // - Siswa: siak, keuangan, perpustakaan, dan PKL (jika dimaping)
-  // - Admin: semua modul (PKL jika SMK)
   const isModuleVisible = (appId: string) => {
-    // PKL HANYA boleh muncul jika jenjang sekolah adalah SMK!
+    if (appId === "cbt") return true;
     if (appId === "pkl" && schoolType !== "SMK") {
       return false;
     }
@@ -267,12 +329,12 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
     }
     const role = getUserRoleFromToken();
     if (role === "teacher" || role === "guru") {
-      if (appId === "siak" || appId === "perpustakaan") return true;
+      if (appId === "siak" || appId === "perpustakaan" || appId === "cbt") return true;
       if (appId === "pkl") return schoolType === "SMK" && isPklMentor;
       return false;
     }
     if (role === "student" || role === "siswa") {
-      if (appId === "siak" || appId === "keuangan" || appId === "perpustakaan") return true;
+      if (appId === "siak" || appId === "keuangan" || appId === "perpustakaan" || appId === "cbt") return true;
       if (appId === "pkl") return schoolType === "SMK" && isPklStudent;
       return false;
     }
@@ -282,7 +344,7 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
 
   // Render logo aplikasi dengan fallback ikon FontAwesome
   const renderLogoBox = (
-    appId: "siak" | "keuangan" | "perpustakaan" | "sarpras" | "pkl",
+    appId: "siak" | "keuangan" | "perpustakaan" | "sarpras" | "pkl" | "cbt",
     fallbackIcon: any,
     fallbackBg: string,
     fallbackText: string
@@ -319,8 +381,9 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
   const perpusApp = apps.perpustakaan || DEFAULT_ECOSYSTEM_APPS.perpustakaan;
   const sarprasApp = apps.sarpras || DEFAULT_ECOSYSTEM_APPS.sarpras;
   const pklApp = apps.pkl || DEFAULT_ECOSYSTEM_APPS.pkl;
+  const cbtApp = apps.cbt || DEFAULT_ECOSYSTEM_APPS.cbt;
 
-  const visibleCount = ["siak", "keuangan", "perpustakaan", "sarpras", "pkl"].filter(isModuleVisible).length;
+  const visibleCount = ["siak", "keuangan", "perpustakaan", "sarpras", "pkl", "cbt"].filter(isModuleVisible).length;
   const popoverWidthClass =
     visibleCount <= 2
       ? "w-[280px] sm:w-[320px]"
@@ -328,7 +391,9 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
       ? "w-[320px] sm:w-[390px]"
       : visibleCount === 4
       ? "w-[360px] sm:w-[470px]"
-      : "w-[360px] sm:w-[560px]";
+      : visibleCount === 5
+      ? "w-[360px] sm:w-[560px]"
+      : "w-[360px] sm:w-[620px]";
 
   const popoverGridClass =
     visibleCount <= 2
@@ -337,7 +402,9 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
       ? "grid-cols-3"
       : visibleCount === 4
       ? "grid-cols-2 sm:grid-cols-4"
-      : "grid-cols-2 sm:grid-cols-5";
+      : visibleCount === 5
+      ? "grid-cols-2 sm:grid-cols-5"
+      : "grid-cols-2 sm:grid-cols-3 md:grid-cols-6";
 
   return (
     <div className="relative" ref={dropdownRef}>
@@ -429,8 +496,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
                 </div>
               ) : (
                 <a
-                  href="http://localhost:3001"
-                  onClick={(e) => handleNavigate("http://localhost:3001", e)}
+                  href={getDynamicUrl("keuangan", 3001)}
+                  onClick={(e) => handleNavigate(getDynamicUrl("keuangan", 3001), e)}
                   className="p-2.5 rounded-2xl border border-slate-100 hover:border-emerald-200 hover:bg-emerald-50/40 flex flex-col items-center text-center transition-all group cursor-pointer"
                 >
                   {renderLogoBox("keuangan", faCoins, "bg-emerald-50", "text-emerald-600")}
@@ -462,8 +529,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
                 </div>
               ) : (
                 <a
-                  href="http://localhost:3002"
-                  onClick={(e) => handleNavigate("http://localhost:3002", e)}
+                  href={getDynamicUrl("perpustakaan", 3002)}
+                  onClick={(e) => handleNavigate(getDynamicUrl("perpustakaan", 3002), e)}
                   className="p-2.5 rounded-2xl border border-slate-100 hover:border-amber-200 hover:bg-amber-50/40 flex flex-col items-center text-center transition-all group cursor-pointer"
                 >
                   {renderLogoBox("perpustakaan", faBookOpen, "bg-amber-50", "text-amber-700")}
@@ -495,8 +562,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
                 </div>
               ) : (
                 <a
-                  href="http://localhost:3003"
-                  onClick={(e) => handleNavigate("http://localhost:3003", e)}
+                  href={getDynamicUrl("sarpras", 3003)}
+                  onClick={(e) => handleNavigate(getDynamicUrl("sarpras", 3003), e)}
                   className="p-2.5 rounded-2xl border border-slate-100 hover:border-teal-200 hover:bg-teal-50/40 flex flex-col items-center text-center transition-all group cursor-pointer"
                 >
                   {renderLogoBox("sarpras", faBoxesStacked, "bg-teal-50", "text-teal-700")}
@@ -528,8 +595,8 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
                 </div>
               ) : (
                 <a
-                  href="http://localhost:3004"
-                  onClick={(e) => handleNavigate("http://localhost:3004", e)}
+                  href={getDynamicUrl("pkl", 3004)}
+                  onClick={(e) => handleNavigate(getDynamicUrl("pkl", 3004), e)}
                   className="p-2.5 rounded-2xl border border-slate-100 hover:border-indigo-200 hover:bg-indigo-50/40 flex flex-col items-center text-center transition-all group cursor-pointer"
                 >
                   {renderLogoBox("pkl", faBriefcase, "bg-indigo-50", "text-indigo-600")}
@@ -542,13 +609,46 @@ export default function AppSwitcher({ currentApp = "pkl" }: AppSwitcherProps) {
                 </a>
               )
             )}
+
+            {/* 6. CBT Ujian */}
+            {isModuleVisible("cbt") && (
+              currentApp === "cbt" ? (
+                <div className="p-2.5 rounded-2xl border bg-purple-50/70 border-purple-200 shadow-2xs flex flex-col items-center text-center">
+                  {renderLogoBox("cbt", faShieldHalved, "bg-purple-50", "text-purple-600")}
+                  <span className="text-xs font-bold text-slate-900 truncate max-w-full px-1" title={cbtApp.name}>
+                    {cbtApp.name}
+                  </span>
+                  <span className="text-[10px] text-slate-500 leading-tight mt-0.5 truncate max-w-full">
+                    {cbtApp.tagline || "Ulangan & SAS"}
+                  </span>
+                  <span className="mt-2 text-[10px] font-bold px-2 py-0.5 rounded-full bg-purple-100 text-purple-700 flex items-center gap-1">
+                    <FontAwesomeIcon icon={faCheck} className="text-[8px]" />
+                    Aktif
+                  </span>
+                </div>
+              ) : (
+                <a
+                  href={getDynamicUrl("cbt", 3005)}
+                  onClick={(e) => handleNavigate(getDynamicUrl("cbt", 3005), e)}
+                  className="p-2.5 rounded-2xl border border-slate-100 hover:border-purple-200 hover:bg-purple-50/40 flex flex-col items-center text-center transition-all group cursor-pointer"
+                >
+                  {renderLogoBox("cbt", faShieldHalved, "bg-purple-50", "text-purple-600")}
+                  <span className="text-xs font-bold text-slate-800 group-hover:text-purple-600 truncate max-w-full px-1" title={cbtApp.name}>
+                    {cbtApp.name}
+                  </span>
+                  <span className="text-[10px] text-slate-400 leading-tight mt-0.5 truncate max-w-full">
+                    {cbtApp.tagline || "Ulangan & SAS"}
+                  </span>
+                </a>
+              )
+            )}
           </div>
 
           {/* Secondary Footer Link: Portal Launcher Utama */}
           <div className="mt-3.5 pt-3 border-t border-slate-100">
             <a
-              href="http://localhost:3000/portal"
-              onClick={(e) => handleNavigate("http://localhost:3000/portal", e)}
+              href={getDynamicUrl("siak", 3000, "/portal")}
+              onClick={(e) => handleNavigate(getDynamicUrl("siak", 3000, "/portal"), e)}
               className="flex items-center justify-between px-3 py-2.5 rounded-xl text-xs font-semibold text-slate-700 hover:bg-indigo-50 hover:text-indigo-700 transition-colors cursor-pointer group"
             >
               <div className="flex items-center gap-2.5">
